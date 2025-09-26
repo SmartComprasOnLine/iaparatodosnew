@@ -1,0 +1,447 @@
+// WhatsApp AI Dashboard Schema
+generator client {
+    provider = "prisma-client-js"
+    binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
+    output = "/home/ubuntu/whatsapp_ai_dashboard/app/node_modules/.prisma/client"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+// Authentication Models
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  phone     String?  @unique // WhatsApp phone number for OTP auth
+  image     String?
+  role      String   @default("user") // admin, user
+  accounts  Account[]
+  sessions  Session[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relations
+  agents               Agent[]
+  otpCodes             OtpCode[]
+  whatsappIntegrations WhatsAppIntegration[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+  @@unique([identifier, token])
+}
+
+// WhatsApp OTP Authentication
+model OtpCode {
+  id        String   @id @default(cuid())
+  phone     String
+  code      String
+  expires   DateTime
+  verified  Boolean  @default(false)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+// Card 1: Agent Configuration
+model Agent {
+  id          String   @id @default(cuid())
+  name        String
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  
+  // Central Prompt Configuration
+  systemPrompt     String   @db.Text
+  promptVersion    Int      @default(1)
+  lastPromptUpdate DateTime @default(now())
+  
+  // AI Provider Settings
+  aiProvider       String   // 'openai', 'gemini', 'groq'
+  apiKey          String?  @db.Text // Encrypted
+  model           String   @default("gpt-4o-mini")
+  temperature     Float    @default(0.7)
+  maxTokens       Int      @default(1500)
+  connectionStatus String  @default("not_tested") // 'connected', 'failed', 'not_tested'
+  
+  // Memory Settings
+  conversationMemory Int     @default(10) // N last messages
+  clearMemoryPerContact Boolean @default(false)
+  rememberPreferences Boolean @default(true)
+  
+  // Timing & Human-like Behavior
+  typingSimulation Boolean @default(true)
+  responseDelay    Int     @default(2000) // milliseconds
+  sequentialWait   Int     @default(1000) // wait for sequential messages
+  
+  // Response Blocks
+  blockSize        Int     @default(200) // characters per block
+  pauseBetweenBlocks Int   @default(1000) // milliseconds
+  maxBlocks        Int     @default(3)
+  
+  // Status
+  isActive    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  whatsappIntegrations WhatsAppIntegration[]
+  accessRules         AccessRule[]
+  handoffConfigs      HandoffConfig[]
+  mentorConfigs       MentorConfig[]
+  automationFunnels   AutomationFunnel[]
+  followUpRules       FollowUpRule[]
+  conversations       Conversation[]
+  mediaFiles          MediaFile[]
+}
+
+// Card 2: WhatsApp Integration
+model WhatsAppIntegration {
+  id           String   @id @default(cuid())
+  agentId      String   @unique
+  agent        Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Instance Configuration (uses centralized Evolution API config from admin)
+  instanceName    String
+  
+  // Connection Status
+  status          String   @default("disconnected") // 'connected', 'disconnected', 'waiting_qr', 'connecting'
+  lastConnection  DateTime?
+  connectionError String?
+  
+  // WhatsApp Session Info
+  phoneNumber     String?
+  profileName     String?
+  sessionData     Json?    // Store session information
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([userId])
+  @@unique([userId, instanceName])
+}
+
+// Card 3: Access Rules
+model AccessRule {
+  id       String @id @default(cuid())
+  agentId  String
+  agent    Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  
+  type     String // 'whitelist', 'blacklist', 'pattern'
+  value    String // phone number or pattern
+  isActive Boolean @default(true)
+  notes    String?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([agentId, type])
+}
+
+// Card 4: Handoff Configuration
+model HandoffConfig {
+  id       String @id @default(cuid())
+  agentId  String @unique
+  agent    Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  
+  isEnabled         Boolean @default(false)
+  keywords          Json    // Array of keywords/phrases
+  intentions        Json    // Array of intention patterns
+  handoffMessage    String  @db.Text
+  resumeCommand     String  @default("retomar")
+  operatorNumbers   Json    // Array of operator phone numbers
+  
+  // Auto handoff conditions
+  maxConsecutiveFails Int    @default(3)
+  uncertaintyThreshold Float @default(0.3)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Card 5: Human Mentor
+model MentorConfig {
+  id       String @id @default(cuid())
+  agentId  String @unique
+  agent    Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  
+  isEnabled       Boolean @default(false)
+  mentorPhone     String?
+  timeoutMinutes  Int     @default(5)
+  
+  // Topics that always require mentor
+  alwaysConsultTopics Json // Array of topics
+  uncertaintyWords    Json // Array of uncertainty indicators
+  
+  // Review settings
+  reviewResponses Boolean @default(false)
+  approvalRequired Boolean @default(false)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Card 7: Automation Funnels
+model AutomationFunnel {
+  id       String @id @default(cuid())
+  agentId  String
+  agent    Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  
+  name        String
+  description String?
+  isActive    Boolean @default(true)
+  
+  // Triggers
+  triggerWords      Json // Array of trigger words
+  triggerIntentions Json // Array of intentions
+  
+  // Configuration
+  repeatCooldownDays Int @default(7) // Don't repeat for same contact for X days
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relations
+  steps FunnelStep[]
+  executions FunnelExecution[]
+  
+  @@index([agentId])
+}
+
+// Funnel Steps
+model FunnelStep {
+  id       String @id @default(cuid())
+  funnelId String
+  funnel   AutomationFunnel @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  
+  stepNumber Int
+  stepType   String // 'text', 'media', 'pause', 'condition', 'delay'
+  
+  // Content
+  textContent  String? @db.Text
+  mediaFileId  String?
+  mediaFile    MediaFile? @relation(fields: [mediaFileId], references: [id])
+  
+  // Timing
+  delaySeconds Int @default(0)
+  
+  // Conditions (for conditional steps)
+  conditions Json? // Conditions for branching
+  
+  // Next step logic
+  nextStepId   String?
+  nextStep     FunnelStep? @relation("StepFlow", fields: [nextStepId], references: [id])
+  previousStep FunnelStep[] @relation("StepFlow")
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([funnelId, stepNumber])
+}
+
+// Funnel Execution Tracking
+model FunnelExecution {
+  id        String @id @default(cuid())
+  funnelId  String
+  funnel    AutomationFunnel @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  
+  contactPhone   String
+  currentStepId  String?
+  status         String // 'active', 'completed', 'paused', 'cancelled'
+  
+  startedAt   DateTime @default(now())
+  completedAt DateTime?
+  lastStepAt  DateTime @default(now())
+  
+  // Execution data
+  executionData Json? // Store execution context
+  
+  @@index([funnelId, contactPhone])
+}
+
+// Card 8: Follow-up Rules
+model FollowUpRule {
+  id       String @id @default(cuid())
+  agentId  String
+  agent    Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  
+  name           String
+  isActive       Boolean @default(true)
+  
+  // Timing rules
+  triggerAfterMinutes Int // 60, 1440 (24h), 4320 (72h)
+  maxAttempts         Int @default(3)
+  stopOnReply         Boolean @default(true)
+  
+  // Message content
+  message String @db.Text
+  
+  // Conditions
+  conditions Json? // When to trigger follow-up
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relations
+  executions FollowUpExecution[]
+  
+  @@index([agentId])
+}
+
+// Follow-up Execution Tracking
+model FollowUpExecution {
+  id       String @id @default(cuid())
+  ruleId   String
+  rule     FollowUpRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  
+  contactPhone     String
+  currentAttempt   Int @default(0)
+  status           String // 'scheduled', 'sent', 'stopped', 'failed'
+  
+  scheduledFor DateTime
+  executedAt   DateTime?
+  lastAttemptAt DateTime?
+  
+  // Execution context
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id])
+  
+  @@index([ruleId, contactPhone])
+}
+
+// Card 9: Media Library
+model MediaFile {
+  id       String @id @default(cuid())
+  agentId  String
+  agent    Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  
+  filename         String
+  originalName     String
+  title            String?
+  description      String?
+  tags             Json? // Array of tags
+  
+  // File details
+  mimeType         String
+  fileSize         BigInt
+  cloudStoragePath String // S3/MinIO path
+  
+  // File type classification
+  fileType String // 'image', 'video', 'audio', 'document'
+  
+  // Usage tracking
+  downloadCount Int @default(0)
+  lastUsed      DateTime?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relations
+  funnelSteps FunnelStep[]
+  
+  @@index([agentId, fileType])
+}
+
+// Card 10: Conversation Simulator & Logs
+model Conversation {
+  id         String @id @default(cuid())
+  agentId    String
+  agent      Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  
+  contactPhone   String
+  contactName    String?
+  
+  // Conversation metadata
+  isSimulation   Boolean @default(false)
+  status         String @default("active") // 'active', 'handoff', 'closed'
+  
+  // Context and memory
+  conversationContext Json? // Store conversation context
+  memorySnapshot      Json? // Last N messages for memory
+  
+  // Tracking
+  messageCount    Int @default(0)
+  lastMessageAt   DateTime @default(now())
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relations
+  messages Message[]
+  followUpExecutions FollowUpExecution[]
+  
+  @@index([agentId, contactPhone])
+  @@index([agentId, isSimulation])
+}
+
+// Individual Messages
+model Message {
+  id             String @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  
+  // Message details
+  messageType String // 'text', 'image', 'audio', 'video', 'document'
+  content     String @db.Text
+  mediaUrl    String?
+  
+  // Message flow
+  isFromUser  Boolean // true if from user, false if from agent
+  isFromAgent Boolean @default(false)
+  
+  // Processing metadata
+  processedBy    String? // 'agent', 'human', 'mentor'
+  processingTime Int? // milliseconds
+  confidence     Float? // AI confidence score
+  
+  // WhatsApp metadata
+  whatsappMessageId String?
+  timestamp         DateTime @default(now())
+  deliveryStatus    String @default("sent") // 'sent', 'delivered', 'read', 'failed'
+  
+  createdAt DateTime @default(now())
+  
+  @@index([conversationId, timestamp])
+}
+
+// System Configuration
+model SystemConfig {
+  id    String @id @default(cuid())
+  key   String @unique
+  value Json
+  
+  updatedAt DateTime @updatedAt
+  
+  @@index([key])
+}
