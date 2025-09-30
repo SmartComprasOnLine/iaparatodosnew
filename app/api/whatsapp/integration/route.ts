@@ -11,10 +11,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Não autorizado' }, { status: 401 })
     }
 
-    const { agentId, instanceName } = await request.json()
+    const { agentId } = await request.json()
 
-    if (!agentId || !instanceName) {
-      return NextResponse.json({ error: 'Agent ID e nome da instância são obrigatórios' }, { status: 400 })
+    if (!agentId) {
+      return NextResponse.json({ error: 'Agent ID é obrigatório' }, { status: 400 })
     }
 
     // Verify Evolution API is configured by admin
@@ -40,22 +40,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Agente não encontrado' }, { status: 404 })
     }
 
-    // Check if instance name is already taken by this user
-    const existingIntegration = await prisma.whatsAppIntegration.findFirst({
-      where: {
-        instanceName,
-        userId: session.user.id,
-        id: { not: agent.id }
-      }
+    // Create or update WhatsApp integration
+    const existingIntegration = await prisma.whatsAppIntegration.findUnique({
+      where: { agentId }
     })
 
-    if (existingIntegration) {
-      return NextResponse.json({ 
-        error: 'Nome da instância já está em uso' 
-      }, { status: 400 })
+    // Auto-generate a sanitized instance name unique across all users
+    const generateInstanceName = async () => {
+      if (existingIntegration?.instanceName) {
+        return existingIntegration.instanceName
+      }
+
+      const sanitize = (value: string) =>
+        value
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+
+      const userPart = sanitize(session.user.id).slice(-6) || 'user'
+      const agentPart = sanitize(agent.id).slice(-6) || 'agent'
+      const base = sanitize(`ia-${userPart}-${agentPart}`) || `ia-${Math.random().toString(36).slice(2, 8)}`
+
+      let instanceName = base
+      let counter = 1
+
+      while (true) {
+        const conflict = await prisma.whatsAppIntegration.findFirst({
+          where: { instanceName }
+        })
+
+        if (!conflict) {
+          return instanceName
+        }
+
+        instanceName = `${base}-${counter}`
+        counter += 1
+      }
     }
 
-    // Create or update WhatsApp integration
+    const instanceName = await generateInstanceName()
+
     const integration = await prisma.whatsAppIntegration.upsert({
       where: { agentId },
       update: {

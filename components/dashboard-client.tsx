@@ -1,26 +1,10 @@
 
 'use client'
 
-import { useState, useEffect } from 'react'
-import { useSession } from 'next-auth/react'
-import { motion } from 'framer-motion'
-import { Card, CardContent } from '@/components/ui/card'
+import { useState, useMemo, useEffect, useCallback, memo } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
-import { 
-  Bot, 
-  MessageSquare, 
-  Shield, 
-  Users, 
-  UserCheck, 
-  Download, 
-  Zap, 
-  Bell, 
-  FolderOpen, 
-  Play,
-  User,
-  Settings,
-  LogOut
-} from 'lucide-react'
+import { Bot, User, Settings, LogOut, ChevronDown } from 'lucide-react'
 import { signOut } from 'next-auth/react'
 
 // Card Components
@@ -29,37 +13,120 @@ import WhatsAppIntegrationCard from '@/components/cards/whatsapp-integration-car
 import AccessRulesCard from '@/components/cards/access-rules-card'
 import HandoffCard from '@/components/cards/handoff-card'
 import MentorCard from '@/components/cards/mentor-card'
-import ExportImportCard from '@/components/cards/export-import-card'
 import FunnelsCard from '@/components/cards/funnels-card'
 import FollowUpCard from '@/components/cards/follow-up-card'
-import MediaLibraryCard from '@/components/cards/media-library-card'
 import SimulatorCard from '@/components/cards/simulator-card'
 
 // Admin Cards
 import AdminEvolutionApiCard from '@/components/cards/admin-evolution-api-card'
 import AdminOtpInstanceCard from '@/components/cards/admin-otp-instance-card'
+import AdminUsersCard from '@/components/cards/admin-users-card'
+import AdminSubscriptionsCard from '@/components/cards/admin-subscriptions-card'
 
 const cardVariants = {
   hidden: { opacity: 0, y: 20 },
   visible: { opacity: 1, y: 0 }
 }
 
-export default function DashboardClient() {
-  const { data: session, status } = useSession() || {}
+interface DashboardClientProps {
+  session: any
+}
+
+const DashboardClient = memo(function DashboardClient({ session }: DashboardClientProps) {
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
-  
-  const isAdmin = session?.user?.role === 'admin'
-  
-  if (status === 'loading') {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center space-y-4">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="text-gray-600">Carregando dashboard...</p>
-        </div>
-      </div>
-    )
-  }
+
+  const isAdmin = useMemo(() => session?.user?.role === 'admin', [session?.user?.role])
+
+  const adminCards = useMemo(() => (
+    isAdmin
+      ? [
+          {
+            id: 'admin-evolution',
+            title: 'Configuração Evolution API',
+            render: () => <AdminEvolutionApiCard />
+          },
+          {
+            id: 'admin-otp',
+            title: 'Instância OTP',
+            render: () => <AdminOtpInstanceCard />
+          },
+          {
+            id: 'admin-users',
+            title: 'Usuários da plataforma',
+            render: () => <AdminUsersCard currentUserId={session?.user?.id} />
+          },
+          {
+            id: 'admin-subscriptions',
+            title: 'Planos & Mercado Pago',
+            render: () => <AdminSubscriptionsCard />
+          }
+        ]
+      : []
+  ), [isAdmin, session?.user?.id])
+
+  const userCards = useMemo(() => [
+    {
+      id: 'agent-config',
+      title: 'Configuração do Agente',
+      render: () => <AgentConfigCard selectedAgent={selectedAgent} setSelectedAgent={setSelectedAgent} />
+    },
+    {
+      id: 'whatsapp-integration',
+      title: 'Integração WhatsApp',
+      render: () => <WhatsAppIntegrationCard selectedAgent={selectedAgent} />
+    },
+    {
+      id: 'access-rules',
+      title: 'Regras de Uso',
+      render: () => <AccessRulesCard selectedAgent={selectedAgent} />
+    },
+    {
+      id: 'handoff',
+      title: 'Handoff',
+      render: () => <HandoffCard selectedAgent={selectedAgent} />
+    },
+    {
+      id: 'mentor',
+      title: 'Mentor Humano',
+      render: () => <MentorCard selectedAgent={selectedAgent} />
+    },
+    {
+      id: 'funnels',
+      title: 'Funis de Automação',
+      render: () => <FunnelsCard selectedAgent={selectedAgent} />
+    },
+    {
+      id: 'follow-up',
+      title: 'Follow-ups',
+      render: () => <FollowUpCard selectedAgent={selectedAgent} />
+    },
+    {
+      id: 'simulator',
+      title: 'Simulador de Conversa',
+      render: () => <SimulatorCard selectedAgent={selectedAgent} />
+    }
+  ], [selectedAgent, setSelectedAgent])
+
+  useEffect(() => {
+    setCollapsedSections((previous) => {
+      const next = { ...previous }
+      const ensureIds = [...adminCards, ...userCards]
+      ensureIds.forEach((card) => {
+        if (next[card.id] === undefined) {
+          next[card.id] = true
+        }
+      })
+      return next
+    })
+  }, [adminCards, userCards])
+
+  const toggleSection = useCallback((id: string) => {
+    setCollapsedSections((prev) => ({
+      ...prev,
+      [id]: !prev[id]
+    }))
+  }, [])
 
   return (
     <div className="min-h-screen">
@@ -76,7 +143,7 @@ export default function DashboardClient() {
                 <Bot className="w-5 h-5 text-white" />
               </div>
               <div>
-                <h1 className="text-xl font-bold text-gray-900">WhatsApp AI Dashboard</h1>
+                <h1 className="text-xl font-bold text-gray-900">14Chat by: Retzz & Shiny</h1>
                 <p className="text-sm text-gray-600">Gerenciamento de Agentes Inteligentes</p>
               </div>
             </div>
@@ -132,85 +199,103 @@ export default function DashboardClient() {
               <h2 className="text-lg font-semibold text-gray-900">Configurações Administrativas</h2>
             </div>
             
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Evolution API Configuration */}
-              <motion.div variants={cardVariants}>
-                <AdminEvolutionApiCard />
-              </motion.div>
-
-              {/* OTP Instance Management */}
-              <motion.div variants={cardVariants}>
-                <AdminOtpInstanceCard />
-              </motion.div>
+            <div className="flex flex-col gap-4">
+              {adminCards.map((card) => {
+                const collapsed = collapsedSections[card.id] ?? true
+                return (
+                  <motion.div key={card.id} variants={cardVariants}>
+                    <div className="rounded-2xl border border-gray-200 bg-white/80 shadow-sm">
+                      <button
+                        type="button"
+                        onClick={() => toggleSection(card.id)}
+                        className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-medium text-gray-900"
+                      >
+                        <span>{card.title}</span>
+                        <ChevronDown
+                          className={`h-4 w-4 transition-transform ${collapsed ? '' : 'rotate-180'}`}
+                        />
+                      </button>
+                      <AnimatePresence initial={false}>
+                        {!collapsed && (
+                          <motion.div
+                            key="content"
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="overflow-hidden border-t border-gray-200"
+                          >
+                            <div className="p-4">
+                              {card.render()}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  </motion.div>
+                )
+              })}
             </div>
           </motion.div>
         )}
 
-        {/* Cards Grid */}
-        <motion.div 
-          initial="hidden"
-          animate="visible"
-          variants={{
-            hidden: {},
-            visible: {
-              transition: {
-                staggerChildren: 0.1
+        {/* Cards Grid - Only for non-admin users */}
+        {!isAdmin && (
+          <motion.div
+            initial="hidden"
+            animate="visible"
+            variants={{
+              hidden: {},
+              visible: {
+                transition: {
+                  staggerChildren: 0.1
+                }
               }
-            }
-          }}
-          className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6"
-        >
-          {/* Card 1: Agent Configuration */}
-          <motion.div variants={cardVariants}>
-            <AgentConfigCard selectedAgent={selectedAgent} setSelectedAgent={setSelectedAgent} />
+            }}
+            className="flex flex-col gap-6"
+          >
+            {userCards.map((card) => {
+            const collapsed = collapsedSections[card.id] ?? true
+            return (
+              <motion.div key={card.id} variants={cardVariants}>
+                <div className="rounded-2xl border border-gray-200 bg-white/80 shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => toggleSection(card.id)}
+                    className="flex w-full items-center justify-between px-4 py-3 text-left text-sm font-semibold text-gray-900"
+                  >
+                    <span>{card.title}</span>
+                    <ChevronDown
+                      className={`h-4 w-4 transition-transform ${collapsed ? '' : 'rotate-180'}`}
+                    />
+                  </button>
+                  <AnimatePresence initial={false}>
+                    {!collapsed && (
+                      <motion.div
+                        key="content"
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden border-t border-gray-200"
+                      >
+                        <div className="p-4">
+                          {card.render()}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </motion.div>
+            )
+          })}
           </motion.div>
-
-          {/* Card 2: WhatsApp Integration */}
-          <motion.div variants={cardVariants}>
-            <WhatsAppIntegrationCard selectedAgent={selectedAgent} />
-          </motion.div>
-
-          {/* Card 3: Access Rules */}
-          <motion.div variants={cardVariants}>
-            <AccessRulesCard selectedAgent={selectedAgent} />
-          </motion.div>
-
-          {/* Card 4: Handoff */}
-          <motion.div variants={cardVariants}>
-            <HandoffCard selectedAgent={selectedAgent} />
-          </motion.div>
-
-          {/* Card 5: Human Mentor */}
-          <motion.div variants={cardVariants}>
-            <MentorCard selectedAgent={selectedAgent} />
-          </motion.div>
-
-          {/* Card 6: Export/Import */}
-          <motion.div variants={cardVariants}>
-            <ExportImportCard selectedAgent={selectedAgent} />
-          </motion.div>
-
-          {/* Card 7: Automation Funnels */}
-          <motion.div variants={cardVariants}>
-            <FunnelsCard selectedAgent={selectedAgent} />
-          </motion.div>
-
-          {/* Card 8: Follow-ups */}
-          <motion.div variants={cardVariants}>
-            <FollowUpCard selectedAgent={selectedAgent} />
-          </motion.div>
-
-          {/* Card 9: Media Library */}
-          <motion.div variants={cardVariants}>
-            <MediaLibraryCard selectedAgent={selectedAgent} />
-          </motion.div>
-
-          {/* Card 10: Conversation Simulator */}
-          <motion.div variants={cardVariants} className="lg:col-span-2 xl:col-span-3">
-            <SimulatorCard selectedAgent={selectedAgent} />
-          </motion.div>
-        </motion.div>
+        )}
       </main>
     </div>
   )
-}
+})
+
+DashboardClient.displayName = 'DashboardClient'
+
+export default DashboardClient

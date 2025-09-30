@@ -4,6 +4,36 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 
+const WEBHOOK_PATH = '/api/whatsapp/webhook'
+
+const resolveBaseUrl = () => {
+  const envUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.NEXTAUTH_URL || process.env.VERCEL_URL
+
+  if (!envUrl) {
+    return null
+  }
+
+  const trimmed = envUrl.trim()
+
+  if (!trimmed) {
+    return null
+  }
+
+  if (trimmed.startsWith('http')) {
+    return trimmed.replace(/\/$/, '')
+  }
+
+  return `https://${trimmed.replace(/\/$/, '')}`
+}
+
+const buildWebhookUrl = () => {
+  const base = resolveBaseUrl()
+  if (!base) {
+    return ''
+  }
+  return `${base}${WEBHOOK_PATH}`
+}
+
 // GET - Load Evolution API configuration
 export async function GET() {
   try {
@@ -17,11 +47,14 @@ export async function GET() {
       where: { key: 'evolution_api_config' }
     })
 
+    const webhookUrl = buildWebhookUrl()
+
     if (!config) {
       return NextResponse.json({
         apiUrl: '',
         apiKey: '',
-        status: 'not_configured'
+        status: 'not_configured',
+        webhookUrl
       })
     }
 
@@ -30,7 +63,8 @@ export async function GET() {
       apiUrl: value.apiUrl || '',
       apiKey: value.apiKey ? '****' + value.apiKey.slice(-4) : '',
       status: value.status || 'not_configured',
-      lastTested: value.lastTested ? new Date(value.lastTested) : undefined
+      lastTested: value.lastTested ? new Date(value.lastTested) : undefined,
+      webhookUrl
     })
 
   } catch (error) {
@@ -79,7 +113,8 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ 
       success: true,
-      message: 'Configuração salva com sucesso'
+      message: 'Configuração salva com sucesso',
+      webhookUrl: buildWebhookUrl()
     })
 
   } catch (error) {
