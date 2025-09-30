@@ -4,17 +4,11 @@ import { getServerSession } from 'next-auth'
 import { authOptions } from '@/lib/auth'
 import { prisma } from '@/lib/db'
 import { logger } from '@/lib/logger'
+import { createAgentSchema, updateAgentSchema } from '@/lib/schemas'
+import { validateRequest } from '@/lib/validation'
+import { getOrSetCache, invalidateCacheKey } from '@/lib/cache'
 
 export const dynamic = 'force-dynamic'
-
-const toNumber = (value: unknown, fallback: number) => {
-  if (value === null || value === undefined) {
-    return fallback
-  }
-
-  const numeric = typeof value === 'string' ? Number.parseFloat(value) : Number(value)
-  return Number.isFinite(numeric) ? numeric : fallback
-}
 
 const secondsToMilliseconds = (value: number) => Math.max(0, Math.round(value * 1000))
 
@@ -40,21 +34,47 @@ const normalizeTimezone = (value: unknown): string | null => {
 }
 
 export async function GET() {
+  let session: any = null
   try {
-    const session = await getServerSession(authOptions)
-    
+    session = await getServerSession(authOptions)
+
     if (!session?.user?.id) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const agents = await prisma.agent.findMany({
-      where: {
-        userId: session.user.id
-      },
-      orderBy: {
-        createdAt: 'desc'
+    const cacheKey = `agents:user:${session.user.id}`
+
+    const agents = await getOrSetCache(
+      cacheKey,
+      5 * 60 * 1000, // 5 minutes TTL
+      async () => {
+        return await prisma.agent.findMany({
+          where: {
+            userId: session.user.id
+          },
+          include: {
+            whatsappIntegrations: {
+              select: {
+                id: true,
+                status: true,
+                phoneNumber: true,
+                lastConnection: true,
+              }
+            },
+            _count: {
+              select: {
+                conversations: true,
+                followUpRules: true,
+                automationFunnels: true,
+              }
+            }
+          },
+          orderBy: {
+            createdAt: 'desc'
+          }
+        })
       }
-    })
+    )
 
     logger.info('Agents fetched successfully', { userId: session.user.id, count: agents.length })
 
@@ -65,56 +85,16 @@ export async function GET() {
   }
 }
 
-export async function POST(request: Request) {
+export const POST = validateRequest(createAgentSchema, async (validatedData, _request) => {
+  let session: any = null
   try {
-    const session = await getServerSession(authOptions)
-    
-    // Detailed session validation
-    if (!session) {
-      return NextResponse.json({ 
-        error: 'No active session. Please log in again.',
-        code: 'NO_SESSION'
-      }, { status: 401 })
+    session = await getServerSession(authOptions)
+
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    if (!session.user) {
-      return NextResponse.json({ 
-        error: 'Invalid session data. Please log in again.',
-        code: 'INVALID_SESSION'
-      }, { status: 401 })
-    }
-
-    if (!session.user.id) {
-      return NextResponse.json({ 
-        error: 'Session missing user ID. Please log out and log in again.',
-        code: 'MISSING_USER_ID'
-      }, { status: 401 })
-    }
-
-    // Verify user exists in database
-    const dbUser = await prisma.user.findUnique({
-      where: { id: session.user.id }
-    })
-
-    if (!dbUser) {
-      return NextResponse.json({ 
-        error: 'User account not found. Please contact support.',
-        code: 'USER_NOT_FOUND',
-        sessionUserId: session.user.id
-      }, { status: 404 })
-    }
-
-    const data = await request.json()
-
-    // Validate required fields
-    if (!data.name || typeof data.name !== 'string' || data.name.trim().length === 0) {
-      return NextResponse.json({ 
-        error: 'Agent name is required and must be a non-empty string',
-        code: 'INVALID_NAME'
-      }, { status: 400 })
-    }
-
-    const timezoneValue = normalizeTimezone(data.timezone ?? DEFAULT_TIMEZONE)
+    const timezoneValue = normalizeTimezone(validatedData.timezone ?? DEFAULT_TIMEZONE)
 
     if (!timezoneValue) {
       return NextResponse.json({
@@ -123,39 +103,40 @@ export async function POST(request: Request) {
       }, { status: 400 })
     }
 
-    const isActive = data.isActive === undefined ? true : Boolean(data.isActive)
-
     const agent = await prisma.agent.create({
       data: {
-        name: data.name.trim(),
-        systemPrompt: data.systemPrompt || '',
-        aiProvider: data.aiProvider || 'openai',
-        apiKey: data.apiKey ? String(data.apiKey) : null,
-        model: data.model || 'gpt-4o-mini',
+        name: validatedData.name.trim(),
+        systemPrompt: validatedData.systemPrompt || '',
+        aiProvider: validatedData.aiProvider,
+        apiKey: validatedData.apiKey ? String(validatedData.apiKey) : null,
+        model: validatedData.model,
         timezone: timezoneValue,
-        temperature: toNumber(data.temperature, 0.7),
-        maxTokens: Math.max(1, Math.round(toNumber(data.maxTokens, 1500))),
-        conversationMemory: Math.max(1, Math.round(toNumber(data.conversationMemory, 10))),
-        typingSimulation: data.typingSimulation === undefined ? true : Boolean(data.typingSimulation),
-        responseDelay: secondsToMilliseconds(toNumber(data.responseDelay, 2)),
-        sequentialWait: secondsToMilliseconds(toNumber(data.sequentialWait, 1)),
-        blockSize: Math.max(50, Math.round(toNumber(data.blockSize, 200))),
-        pauseBetweenBlocks: secondsToMilliseconds(toNumber(data.pauseBetweenBlocks, 1)),
-        maxBlocks: Math.max(1, Math.round(toNumber(data.maxBlocks, 3))),
-        isActive,
+        temperature: validatedData.temperature,
+        maxTokens: validatedData.maxTokens,
+        conversationMemory: validatedData.conversationMemory,
+        typingSimulation: validatedData.typingSimulation,
+        responseDelay: secondsToMilliseconds(validatedData.responseDelay ?? 2),
+        sequentialWait: secondsToMilliseconds(validatedData.sequentialWait ?? 1),
+        blockSize: validatedData.blockSize,
+        pauseBetweenBlocks: secondsToMilliseconds(validatedData.pauseBetweenBlocks ?? 1),
+        maxBlocks: validatedData.maxBlocks,
+        isActive: validatedData.isActive,
         userId: session.user.id,
       }
     })
+
+    // Invalidate cache for this user's agents
+    await invalidateCacheKey(`agents:user:${session.user.id}`)
 
     logger.info('Agent created successfully', { agentId: agent.id, userId: session.user.id, name: agent.name })
 
     return NextResponse.json(agent)
   } catch (error) {
     logger.error('Error creating agent', { error: error instanceof Error ? error.message : String(error), userId: session?.user?.id })
-    
+
     // Handle specific Prisma errors
     if (error && typeof error === 'object' && 'code' in error && error.code === 'P2003') {
-      return NextResponse.json({ 
+      return NextResponse.json({
         error: 'Database constraint violation. Your session may be invalid. Please log out and log in again.',
         code: 'FOREIGN_KEY_CONSTRAINT',
         details: 'User ID from session does not exist in database'
@@ -163,36 +144,31 @@ export async function POST(request: Request) {
     }
 
     if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
-      return NextResponse.json({ 
+      return NextResponse.json({
         error: 'An agent with this configuration already exists.',
         code: 'UNIQUE_CONSTRAINT'
       }, { status: 409 })
     }
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       error: 'Failed to create agent. Please try again.',
       code: 'INTERNAL_ERROR'
     }, { status: 500 })
   }
-}
+})
 
-export async function PUT(request: Request) {
+export const PUT = validateRequest(updateAgentSchema, async (validatedData, _request) => {
+  let session: any = null
   try {
-    const session = await getServerSession(authOptions)
-    
+    session = await getServerSession(authOptions)
+
     if (!session?.user?.id) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const data = await request.json()
-
-    if (!data.id) {
-      return NextResponse.json({ error: 'Agent ID is required' }, { status: 400 })
-    }
-
     let timezoneToApply: string | undefined
-    if (data.timezone !== undefined) {
-      const normalized = normalizeTimezone(data.timezone)
+    if (validatedData.timezone !== undefined) {
+      const normalized = normalizeTimezone(validatedData.timezone)
       if (!normalized) {
         return NextResponse.json({
           error: 'Invalid timezone. Provide a valid IANA timezone like America/Sao_Paulo',
@@ -204,37 +180,40 @@ export async function PUT(request: Request) {
     }
 
     const updateData: any = {
-      name: data.name,
-      systemPrompt: data.systemPrompt,
-      aiProvider: data.aiProvider,
-      apiKey: data.apiKey ? String(data.apiKey) : null,
-      model: data.model,
-      temperature: toNumber(data.temperature, 0.7),
-      maxTokens: Math.max(1, Math.round(toNumber(data.maxTokens, 1500))),
-      conversationMemory: Math.max(1, Math.round(toNumber(data.conversationMemory, 10))),
-      typingSimulation: data.typingSimulation === undefined ? true : Boolean(data.typingSimulation),
-      responseDelay: secondsToMilliseconds(toNumber(data.responseDelay, 2)),
-      sequentialWait: secondsToMilliseconds(toNumber(data.sequentialWait, 1)),
-      blockSize: Math.max(50, Math.round(toNumber(data.blockSize, 200))),
-      pauseBetweenBlocks: secondsToMilliseconds(toNumber(data.pauseBetweenBlocks, 1)),
-      maxBlocks: Math.max(1, Math.round(toNumber(data.maxBlocks, 3))),
+      name: validatedData.name,
+      systemPrompt: validatedData.systemPrompt,
+      aiProvider: validatedData.aiProvider,
+      apiKey: validatedData.apiKey ? String(validatedData.apiKey) : null,
+      model: validatedData.model,
+      temperature: validatedData.temperature,
+      maxTokens: validatedData.maxTokens,
+      conversationMemory: validatedData.conversationMemory,
+      typingSimulation: validatedData.typingSimulation,
+      responseDelay: secondsToMilliseconds(validatedData.responseDelay ?? 2),
+      sequentialWait: secondsToMilliseconds(validatedData.sequentialWait ?? 1),
+      blockSize: validatedData.blockSize,
+      pauseBetweenBlocks: secondsToMilliseconds(validatedData.pauseBetweenBlocks ?? 1),
+      maxBlocks: validatedData.maxBlocks,
     }
 
     if (timezoneToApply) {
       updateData.timezone = timezoneToApply
     }
 
-    if ('isActive' in data) {
-      updateData.isActive = Boolean(data.isActive)
+    if (validatedData.isActive !== undefined) {
+      updateData.isActive = validatedData.isActive
     }
 
     const agent = await prisma.agent.update({
       where: {
-        id: data.id,
+        id: validatedData.id,
         userId: session.user.id
       },
       data: updateData
     })
+
+    // Invalidate cache for this user's agents
+    await invalidateCacheKey(`agents:user:${session.user.id}`)
 
     logger.info('Agent updated successfully', { agentId: agent.id, userId: session.user.id, name: agent.name })
 
@@ -243,4 +222,4 @@ export async function PUT(request: Request) {
     logger.error('Error updating agent', { error: error instanceof Error ? error.message : String(error), userId: session?.user?.id })
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
-}
+})
